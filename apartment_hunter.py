@@ -216,20 +216,41 @@ def safe_str(v: Any) -> str:
 def normalize_listing(card: dict[str, Any]) -> dict[str, Any]:
     """Map Oikotie's card shape to our flat schema. All string ops via safe_str."""
     price = parse_int(card.get("price"))
-    size_m2 = parse_float(card.get("areaLiving") or card.get("size"))
+    size_m2 = parse_float(card.get("size"))
     rooms = parse_rooms(card.get("rooms") or card.get("roomConfiguration"))
-    district = safe_str(card.get("district"))
-    city = ""
-    loc = card.get("location")
-    if isinstance(loc, dict):
-        if not district:
-            district = safe_str(loc.get("district") or loc.get("city"))
-        city = safe_str(loc.get("city"))
+
+    bd = card.get("buildingData") or {}
+    if not isinstance(bd, dict):
+        bd = {}
+
+    district = safe_str(bd.get("district"))
+    city = safe_str(bd.get("city"))
+    address = safe_str(bd.get("address"))
+    build_year = parse_int(bd.get("year"))
+    floor = bd.get("floor")
+    floor_count = bd.get("floorCount")
+    floor_text = ""
+    if floor is not None and floor_count is not None:
+        floor_text = f"{floor}/{floor_count}"
+    elif floor is not None:
+        floor_text = str(floor)
+
+    images = card.get("images")
+    image_url = ""
+    if isinstance(images, dict):
+        image_url = safe_str(images.get("thumb") or images.get("feed") or images.get("wide"))
+    elif isinstance(images, list) and images:
+        first = images[0]
+        if isinstance(first, dict):
+            image_url = safe_str(first.get("thumb") or first.get("feed") or first.get("wide"))
+        elif isinstance(first, str):
+            image_url = first
+
     return {
         "id":          safe_str(card.get("id") or card.get("cardId")),
         "url":         safe_str(card.get("url")) or f"https://asunnot.oikotie.fi/myytavat-asunnot/{safe_str(card.get('id'))}",
-        "title":       safe_str(card.get("description") or card.get("address")),
-        "address":     safe_str(card.get("address")),
+        "title":       safe_str(card.get("description") or address),
+        "address":     address,
         "city":        city,
         "district":    district,
         "rooms":       rooms,
@@ -237,9 +258,10 @@ def normalize_listing(card: dict[str, Any]) -> dict[str, Any]:
         "size_m2":     size_m2,
         "price_eur":   price,
         "price_per_m2": (price / size_m2) if (price and size_m2) else None,
-        "build_year":  parse_int(card.get("buildYear")),
-        "floor":       card.get("floor"),
-        "image":       card.get("imageUrl") or card.get("image") or "",
+        "build_year":  build_year,
+        "floor":       floor_text,
+        "floor_num":   floor if isinstance(floor, int) else None,
+        "image":       image_url,
         "raw":         card,
     }
 
@@ -343,9 +365,12 @@ def score_listing(l: dict, c: dict, baseline: dict) -> dict:
 
     # --- character (10) — high floor, view, large balcony
     char_pts = 0
-    floor_str = str(l.get("floor") or "")
-    floor_match = re.search(r"(\d+)", floor_str)
-    if floor_match and int(floor_match.group(1)) >= 5:
+    floor_num = l.get("floor_num")
+    if floor_num is None:
+        m = re.search(r"(\d+)", str(l.get("floor") or ""))
+        if m:
+            floor_num = int(m.group(1))
+    if floor_num is not None and floor_num >= 5:
         char_pts += 4
     if has_keyword(raw_text, "merinäköala", "merinakoala", "sea view", "näköala merelle", "näköala"):
         char_pts += 4
