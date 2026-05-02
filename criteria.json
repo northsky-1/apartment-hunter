@@ -1,0 +1,27 @@
+{
+  "_comment": "Your apartment hunting criteria. Edit freely.",
+  "cities": ["Helsinki", "Espoo"],
+  "rooms_min": 2,
+  "rooms_max": 4,
+  "rooms_preferred": [2, 3],
+  "price_max_eur": 350000,
+  "size_min_m2": 45,
+  "must_haves": [],
+  "nice_to_haves": [
+    "parking",
+    "balcony",
+    "high_floor",
+    "sea_view",
+    "elevator",
+    "near_metro"
+  ],
+  "weights": {
+    "price_vs_market": 40,
+    "criteria_match": 20,
+    "location": 15,
+    "parking": 10,
+    "character": 10,
+    "risk_penalty_max": 5
+  },
+  "intent": "live_now_rent_later"
+}
