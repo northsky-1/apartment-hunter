@@ -641,7 +641,14 @@ def main() -> int:
                 # One-time peek at the response shape to spot field changes early
                 sample = cards[0]
                 print(f"  sample card keys: {sorted(sample.keys())}")
-                print(f"  sample card preview: {json.dumps({k: sample.get(k) for k in list(sample)[:12]}, ensure_ascii=False)[:400]}")
+                # Dump the nested structures we likely need for district/address/image
+                for k in ("buildingData", "coordinates", "images", "url"):
+                    val = sample.get(k)
+                    if isinstance(val, (dict, list)):
+                        snippet = json.dumps(val, ensure_ascii=False)[:600]
+                    else:
+                        snippet = repr(val)
+                    print(f"  sample.{k} = {snippet}")
                 first_dump_done = True
             for card in cards:
                 try:
