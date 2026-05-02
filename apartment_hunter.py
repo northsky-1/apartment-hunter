@@ -191,39 +191,49 @@ def parse_float(s: Any) -> float | None:
         return None
 
 
-def parse_rooms(s: str | None) -> int | None:
-    """'2h+kk', '3h+k+s' → 2, 3."""
-    if not s:
+def parse_rooms(s: Any) -> int | None:
+    """'2h+kk' / '3h+k+s' / int 2 → 2, 3."""
+    if s is None or s == "":
         return None
-    m = re.match(r"\s*(\d+)\s*h", s.lower())
-    return int(m.group(1)) if m else None
+    if isinstance(s, (int, float)):
+        return int(s)
+    text = str(s).lower()
+    m = re.match(r"\s*(\d+)\s*h", text)
+    if m:
+        return int(m.group(1))
+    # Fall back: first integer anywhere in the string
+    m = re.search(r"\d+", text)
+    return int(m.group(0)) if m else None
+
+
+def safe_str(v: Any) -> str:
+    """Coerce a value to a stripped string, treating None as empty."""
+    if v is None:
+        return ""
+    return str(v).strip()
 
 
 def normalize_listing(card: dict[str, Any]) -> dict[str, Any]:
-    """Map Oikotie's card shape to our flat schema."""
-    price_str = card.get("price")
-    price = parse_int(price_str)
-    size_str = card.get("size") or card.get("roomConfiguration") or ""
+    """Map Oikotie's card shape to our flat schema. All string ops via safe_str."""
+    price = parse_int(card.get("price"))
     size_m2 = parse_float(card.get("areaLiving") or card.get("size"))
     rooms = parse_rooms(card.get("rooms") or card.get("roomConfiguration"))
-    district = (card.get("district") or "").strip()
-    if not district:
-        # Sometimes it's nested under 'location'
-        loc = card.get("location") or {}
-        district = (loc.get("district") or loc.get("city") or "").strip()
+    district = safe_str(card.get("district"))
     city = ""
-    loc = card.get("location") or {}
+    loc = card.get("location")
     if isinstance(loc, dict):
-        city = (loc.get("city") or "").strip()
+        if not district:
+            district = safe_str(loc.get("district") or loc.get("city"))
+        city = safe_str(loc.get("city"))
     return {
-        "id":          str(card.get("id") or card.get("cardId") or ""),
-        "url":         card.get("url") or f"https://asunnot.oikotie.fi/myytavat-asunnot/{card.get('id','')}",
-        "title":       card.get("description") or card.get("address") or "",
-        "address":     card.get("address") or "",
+        "id":          safe_str(card.get("id") or card.get("cardId")),
+        "url":         safe_str(card.get("url")) or f"https://asunnot.oikotie.fi/myytavat-asunnot/{safe_str(card.get('id'))}",
+        "title":       safe_str(card.get("description") or card.get("address")),
+        "address":     safe_str(card.get("address")),
         "city":        city,
         "district":    district,
         "rooms":       rooms,
-        "rooms_text":  card.get("rooms") or card.get("roomConfiguration") or "",
+        "rooms_text":  safe_str(card.get("rooms") or card.get("roomConfiguration")),
         "size_m2":     size_m2,
         "price_eur":   price,
         "price_per_m2": (price / size_m2) if (price and size_m2) else None,
@@ -622,12 +632,22 @@ def main() -> int:
 
     print("Fetching listings…")
     all_listings: list[dict] = []
+    first_dump_done = False
     for city in criteria["cities"]:
         try:
             cards = fetch_listings(city, size=150, tokens=tokens)
             print(f"  {city}: {len(cards)} listings")
+            if cards and not first_dump_done:
+                # One-time peek at the response shape to spot field changes early
+                sample = cards[0]
+                print(f"  sample card keys: {sorted(sample.keys())}")
+                print(f"  sample card preview: {json.dumps({k: sample.get(k) for k in list(sample)[:12]}, ensure_ascii=False)[:400]}")
+                first_dump_done = True
             for card in cards:
-                all_listings.append(normalize_listing(card))
+                try:
+                    all_listings.append(normalize_listing(card))
+                except Exception as e:
+                    print(f"  skipped 1 card: {type(e).__name__}: {e}", file=sys.stderr)
             time.sleep(1.5)
         except Exception as e:
             print(f"  {city}: ERROR — {e}", file=sys.stderr)
