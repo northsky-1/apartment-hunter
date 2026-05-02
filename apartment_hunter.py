@@ -103,16 +103,24 @@ def get_session_tokens() -> dict[str, str]:
     if len(tokens) >= 2:
         return tokens
 
-    # --- B: homepage HTML
+    # --- B: homepage HTML — Oikotie embeds tokens as <meta> tags:
+    #   <meta name="api-token" content="...">
+    #   <meta name="loaded"    content="...">
+    #   <meta name="cuid"      content="...">
     status, body = _fetch(HOMEPAGE_URL)
     if status == 200 and body:
-        for key, patterns in [
-            ("OTA-token",  [r'"api-token"\s*:\s*"([^"]+)"', r'"apiToken"\s*:\s*"([^"]+)"', r'"token"\s*:\s*"([^"]+)"']),
-            ("OTA-loaded", [r'"loaded"\s*:\s*"([^"]+)"', r'data-loaded="([^"]+)"']),
-            ("OTA-cuid",   [r'"cuid"\s*:\s*"([^"]+)"', r'data-cuid="([^"]+)"']),
+        for key, meta_name in [
+            ("OTA-token",  "api-token"),
+            ("OTA-loaded", "loaded"),
+            ("OTA-cuid",   "cuid"),
         ]:
             if key in tokens:
                 continue
+            # Match meta tags in either attribute order
+            patterns = [
+                rf'<meta\s+name="{meta_name}"\s+content="([^"]+)"',
+                rf'<meta\s+content="([^"]+)"\s+name="{meta_name}"',
+            ]
             for pat in patterns:
                 m = re.search(pat, body)
                 if m:
