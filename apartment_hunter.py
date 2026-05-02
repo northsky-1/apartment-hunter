@@ -131,26 +131,41 @@ def get_session_tokens() -> dict[str, str]:
 
 
 def fetch_listings(city: str, size: int = 100, tokens: dict | None = None) -> list[dict[str, Any]]:
+    """Page through /api/cards. Oikotie caps `size` at 100 per request, so we paginate."""
     loc = LOCATIONS[city]
-    params = {
-        "cardType": 100,                       # 100 = apartments for sale
-        "locations": json.dumps([loc], ensure_ascii=False),
-        "size": size,
-        "sortBy": "published_sort_desc",
-    }
-    url = OIKOTIE_API + "?" + urllib.parse.urlencode(params, safe="[]\"")
     headers = {"User-Agent": UA, "Accept": "application/json"}
     if tokens:
         headers.update(tokens)
-    status, body = _fetch(url, headers=headers, timeout=30)
-    if status != 200:
-        snippet = body[:300].replace("\n", " ") if body else ""
-        raise RuntimeError(f"HTTP {status} from /api/cards. Response: {snippet}")
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Non-JSON response from /api/cards: {body[:300]}")
-    return data.get("cards", [])
+
+    page_size = min(size, 100)
+    cards: list[dict] = []
+    offset = 0
+    while len(cards) < size:
+        params = {
+            "cardType": 100,                                   # 100 = apartments for sale
+            "locations": json.dumps([loc], ensure_ascii=False),
+            "limit": page_size,
+            "offset": offset,
+            "sortBy": "published_sort_desc",
+        }
+        url = OIKOTIE_API + "?" + urllib.parse.urlencode(params, safe="[]\"")
+        status, body = _fetch(url, headers=headers, timeout=30)
+        if status != 200:
+            snippet = body[:300].replace("\n", " ") if body else ""
+            raise RuntimeError(f"HTTP {status} from /api/cards. Response: {snippet}")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Non-JSON response from /api/cards: {body[:300]}")
+        page = data.get("cards", [])
+        if not page:
+            break
+        cards.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+        time.sleep(0.5)
+    return cards[:size]
 
 
 # ---------- parsing ----------
