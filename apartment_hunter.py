@@ -517,11 +517,65 @@ def write_history_page() -> None:
 
 # ---------- main ----------
 
+def diagnose_oikotie() -> None:
+    """Print enough of Oikotie's homepage to figure out where session tokens live now."""
+    print("=" * 60)
+    print("DIAGNOSTIC: probing Oikotie endpoints")
+    print("=" * 60)
+
+    # 1) Hit a few candidate token endpoints
+    for path in ["/user/token", "/api/user/token", "/api/3.0/user/token",
+                 "/session/token", "/api/session/token"]:
+        url = "https://asunnot.oikotie.fi" + path
+        status, body = _fetch(url, headers={"Accept": "application/json"})
+        print(f"\n[GET {path}] HTTP {status}")
+        print(f"  body[:400]: {body[:400]!r}")
+
+    # 2) Dump homepage and look for token-shaped strings
+    print(f"\n[GET /]")
+    status, body = _fetch(HOMEPAGE_URL)
+    print(f"  HTTP {status}, {len(body)} bytes")
+
+    # Look for any meta tag, attribute, or JSON key that looks token-related
+    print("\nLines mentioning 'token', 'cuid', 'loaded', 'OTA':")
+    seen_lines = set()
+    for line in body.split("\n"):
+        low = line.lower()
+        if any(k in low for k in ["token", "cuid", "ota-", '"loaded"']):
+            stripped = line.strip()[:300]
+            if stripped and stripped not in seen_lines:
+                print(f"  {stripped}")
+                seen_lines.add(stripped)
+                if len(seen_lines) > 30:
+                    print("  (more lines truncated)")
+                    break
+
+    # 3) Look for inline JSON blobs (next.js / nuxt / similar)
+    print("\nSearching for embedded state JSON…")
+    for marker in ["__NEXT_DATA__", "__NUXT__", "window.__INITIAL_STATE__", "self.__next_f"]:
+        if marker in body:
+            idx = body.index(marker)
+            print(f"  found '{marker}' at byte {idx}")
+            print(f"  snippet: {body[idx:idx+400]!r}")
+
+    # 4) Check what /api/cards actually wants — look for any header hints in response
+    print("\n[GET /api/cards without auth]")
+    status, body = _fetch(OIKOTIE_API + "?cardType=100&size=1", headers={"Accept": "application/json"})
+    print(f"  HTTP {status}, body: {body[:300]!r}")
+
+    print("\n" + "=" * 60)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--open", action="store_true", help="Open report in browser when done")
     ap.add_argument("--history", action="store_true", help="List past reports")
+    ap.add_argument("--diagnose", action="store_true", help="Print Oikotie endpoint diagnostics and exit")
     args = ap.parse_args()
+
+    if args.diagnose:
+        diagnose_oikotie()
+        return 0
 
     if args.history:
         if not REPORTS_DIR.exists():

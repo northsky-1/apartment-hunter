@@ -1,0 +1,20 @@
+name: Diagnose Oikotie
+
+# Manually triggered. Probes Oikotie endpoints and prints what they return,
+# so we can figure out where session tokens are embedded today.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run diagnostic
+        run: python3 apartment_hunter.py --diagnose
+        env:
+          PYTHONUNBUFFERED: "1"
