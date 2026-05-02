@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -43,9 +44,10 @@ LOCATIONS = {
     "Espoo":    [49, 6, "Espoo"],
 }
 
-# These two headers are pulled fresh from a no-cost endpoint hit on each run.
-# Oikotie rotates a per-session token; we grab it before calling /api/cards.
-SESSION_BOOTSTRAP_URL = "https://asunnot.oikotie.fi/uusi-asunto"
+# Oikotie's API uses three rotating per-session headers: OTA-token, OTA-loaded, OTA-cuid.
+# We try several extraction strategies because Oikotie has reshuffled their bootstrap a few times.
+HOMEPAGE_URL = "https://asunnot.oikotie.fi/"
+TOKEN_ENDPOINT = "https://asunnot.oikotie.fi/user/token"  # observed in dev tools
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -56,26 +58,71 @@ UA = (
 
 # ---------- session / fetch ----------
 
+def _fetch(url: str, headers: dict | None = None, timeout: int = 20) -> tuple[int, str]:
+    """Fetch a URL and return (status, body_text). Doesn't raise on non-200."""
+    h = {"User-Agent": UA, "Accept": "*/*"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        return e.code, body
+
+
 def get_session_tokens() -> dict[str, str]:
-    """Scrape Oikotie's home page for the OTA-token and loaded headers it uses
-    in client-side XHRs. The /api/cards endpoint requires these."""
-    req = urllib.request.Request(SESSION_BOOTSTRAP_URL, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
-    tokens = {}
-    # The site embeds these as meta tags / inline JS. We try several patterns.
-    for key, pattern in [
-        ("OTA-token",   r'"api-token"\s*:\s*"([^"]+)"'),
-        ("OTA-loaded",  r'"loaded"\s*:\s*"([^"]+)"'),
-        ("OTA-cuid",    r'"cuid"\s*:\s*"([^"]+)"'),
-    ]:
-        m = re.search(pattern, body)
-        if m:
-            tokens[key] = m.group(1)
+    """Try multiple strategies to get Oikotie's per-session OTA-* headers.
+
+    Strategy A: hit the dedicated /user/token endpoint, which returns JSON with
+                {token, loaded, cuid} fields.
+    Strategy B: scrape the homepage HTML for embedded token data.
+    """
+    tokens: dict[str, str] = {}
+
+    # --- A: token endpoint
+    status, body = _fetch(TOKEN_ENDPOINT, headers={"Accept": "application/json"})
+    if status == 200 and body:
+        try:
+            data = json.loads(body)
+            if isinstance(data, dict):
+                # Common field names seen across versions
+                t = data.get("token") or data.get("api-token") or data.get("apiToken")
+                l = data.get("loaded") or data.get("Loaded")
+                c = data.get("cuid") or data.get("Cuid")
+                if t: tokens["OTA-token"] = t
+                if l: tokens["OTA-loaded"] = l
+                if c: tokens["OTA-cuid"] = c
+        except json.JSONDecodeError:
+            pass
+
+    if len(tokens) >= 2:
+        return tokens
+
+    # --- B: homepage HTML
+    status, body = _fetch(HOMEPAGE_URL)
+    if status == 200 and body:
+        for key, patterns in [
+            ("OTA-token",  [r'"api-token"\s*:\s*"([^"]+)"', r'"apiToken"\s*:\s*"([^"]+)"', r'"token"\s*:\s*"([^"]+)"']),
+            ("OTA-loaded", [r'"loaded"\s*:\s*"([^"]+)"', r'data-loaded="([^"]+)"']),
+            ("OTA-cuid",   [r'"cuid"\s*:\s*"([^"]+)"', r'data-cuid="([^"]+)"']),
+        ]:
+            if key in tokens:
+                continue
+            for pat in patterns:
+                m = re.search(pat, body)
+                if m:
+                    tokens[key] = m.group(1)
+                    break
+
     return tokens
 
 
-def fetch_listings(city: str, size: int = 100) -> list[dict[str, Any]]:
+def fetch_listings(city: str, size: int = 100, tokens: dict | None = None) -> list[dict[str, Any]]:
     loc = LOCATIONS[city]
     params = {
         "cardType": 100,                       # 100 = apartments for sale
@@ -85,13 +132,16 @@ def fetch_listings(city: str, size: int = 100) -> list[dict[str, Any]]:
     }
     url = OIKOTIE_API + "?" + urllib.parse.urlencode(params, safe="[]\"")
     headers = {"User-Agent": UA, "Accept": "application/json"}
+    if tokens:
+        headers.update(tokens)
+    status, body = _fetch(url, headers=headers, timeout=30)
+    if status != 200:
+        snippet = body[:300].replace("\n", " ") if body else ""
+        raise RuntimeError(f"HTTP {status} from /api/cards. Response: {snippet}")
     try:
-        headers.update(get_session_tokens())
-    except Exception as e:
-        print(f"  (session token fetch failed: {e}; trying without)", file=sys.stderr)
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Non-JSON response from /api/cards: {body[:300]}")
     return data.get("cards", [])
 
 
@@ -485,11 +535,19 @@ def main() -> int:
     baseline = json.loads(BASELINE_FILE.read_text())
     seen_before = load_seen()
 
+    print("Fetching session tokens…")
+    try:
+        tokens = get_session_tokens()
+        print(f"  got tokens: {sorted(tokens.keys())}")
+    except Exception as e:
+        print(f"  token fetch failed: {e}", file=sys.stderr)
+        tokens = {}
+
     print("Fetching listings…")
     all_listings: list[dict] = []
     for city in criteria["cities"]:
         try:
-            cards = fetch_listings(city, size=150)
+            cards = fetch_listings(city, size=150, tokens=tokens)
             print(f"  {city}: {len(cards)} listings")
             for card in cards:
                 all_listings.append(normalize_listing(card))
